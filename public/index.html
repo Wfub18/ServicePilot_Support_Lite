@@ -1,0 +1,94 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta
+      name="description"
+      content="AI-администратор компании ServicePilot Support"
+    />
+    <title>ServicePilot Support</title>
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <header class="topbar">
+        <div class="brand">
+          <div class="brand-mark" aria-hidden="true">
+            <svg viewBox="0 0 32 32" role="img">
+              <path d="M7 10.5A6.5 6.5 0 0 1 13.5 4h5A6.5 6.5 0 0 1 25 10.5v11a6.5 6.5 0 0 1-6.5 6.5H7l3.5-4.8A6.5 6.5 0 0 1 7 17.5v-7Z" />
+              <circle cx="13" cy="16" r="1.5" />
+              <circle cx="19" cy="16" r="1.5" />
+            </svg>
+          </div>
+          <div>
+            <h1>ServicePilot Support</h1>
+            <div class="status-line">
+              <span class="status-dot" aria-hidden="true"></span>
+              <span>AI-администратор</span>
+            </div>
+          </div>
+        </div>
+        <div class="availability" aria-label="Критические обращения P1 принимаются круглосуточно">
+          <span>Поддержка P1</span>
+          <strong>24/7</strong>
+        </div>
+      </header>
+
+      <main class="chat-card" aria-label="Чат с AI-администратором">
+        <section
+          id="messages"
+          class="messages"
+          aria-live="polite"
+          aria-relevant="additions"
+        >
+          <article class="message assistant-message">
+            <div class="avatar" aria-hidden="true">SP</div>
+            <div class="message-content">
+              <span class="message-author">AI-администратор</span>
+              <div class="bubble">Здравствуйте! Я AI-администратор ServicePilot Support. Расскажу об услугах, стоимости и времени работы компании. Чем могу помочь?</div>
+            </div>
+          </article>
+        </section>
+
+        <section class="quick-facts" aria-label="Краткая информация">
+          <div class="fact">
+            <span class="fact-label">Удалённая поддержка</span>
+            <strong>3 000 ₽</strong>
+          </div>
+          <div class="fact">
+            <span class="fact-label">Выезд инженера</span>
+            <strong>5 000 ₽</strong>
+          </div>
+          <div class="fact">
+            <span class="fact-label">Стандартные часы работы</span>
+            <strong>Пн–Пт, 09:00–18:00</strong>
+          </div>
+        </section>
+
+        <form id="chat-form" class="composer">
+          <label class="sr-only" for="message-input">Введите сообщение</label>
+          <textarea
+            id="message-input"
+            name="message"
+            rows="1"
+            maxlength="4000"
+            placeholder="Напишите ваш вопрос…"
+            autocomplete="off"
+            required
+          ></textarea>
+          <button id="send-button" type="submit" aria-label="Отправить сообщение">
+            <span>Отправить</span>
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="m5 12 14-7-4.5 14-3-5.5L5 12Zm6.5 1.5L19 5" />
+            </svg>
+          </button>
+        </form>
+        <p class="composer-hint">Enter — отправить · Shift + Enter — новая строка</p>
+      </main>
+    </div>
+
+    <script src="/app.js" defer></script>
+  </body>
+</html>
