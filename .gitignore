@@ -1,5 +1,9 @@
 .env
+.env.*
+!.env.example
 node_modules/
 .pnpm-store/
 npm-debug.log*
 .DS_Store
+ServicePilot_Support_Lite_SUBMIT.zip
+.vercel/

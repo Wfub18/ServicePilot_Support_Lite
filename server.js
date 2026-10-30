@@ -1,13 +1,15 @@
 const http = require("node:http");
 const fs = require("node:fs/promises");
 const path = require("node:path");
-const { setTimeout: delay } = require("node:timers/promises");
+const { setTimeout: wait } = require("node:timers/promises");
 
 const HOST = "127.0.0.1";
 const DEFAULT_PORT = 3000;
-const DEFAULT_TIMEOUT_MS = 120_000;
-const MAX_API_ATTEMPTS = 7;
-const RETRY_DELAYS_MS = [1_000, 2_000, 3_000, 5_000, 8_000, 12_000];
+const DEFAULT_TIMEOUT_MS = 90_000;
+const DEFAULT_ATTEMPT_TIMEOUT_MS = 30_000;
+const MAX_API_ATTEMPTS = 5;
+const MAX_OUTPUT_TOKENS = 1_200;
+const MAX_TOTAL_MESSAGE_LENGTH = 16_000;
 const MAX_BODY_SIZE = 100_000;
 const MAX_MESSAGES = 24;
 const MAX_MESSAGE_LENGTH = 4_000;
@@ -70,26 +72,55 @@ function sendEvent(response, payload) {
   response.write(`${JSON.stringify(payload)}\n`);
 }
 
-function readJsonBody(request) {
-  return new Promise((resolve, reject) => {
-    let body = "";
+class HttpError extends Error {
+  constructor(status) {
+    super("Request rejected");
+    this.status = status;
+  }
+}
 
-    request.setEncoding("utf8");
-    request.on("data", (chunk) => {
-      body += chunk;
-      if (Buffer.byteLength(body, "utf8") > MAX_BODY_SIZE) {
-        reject(new Error("Request body is too large"));
-        request.destroy();
-      }
-    });
-    request.on("end", () => {
-      try {
-        resolve(JSON.parse(body || "{}"));
-      } catch {
-        reject(new Error("Invalid JSON"));
-      }
-    });
-    request.on("error", reject);
+async function readJsonBody(request) {
+  // Vercel's Node handler may have already parsed the body.
+  if (request.body !== undefined) {
+    const raw = typeof request.body === "string" || Buffer.isBuffer(request.body)
+      ? request.body.toString() : JSON.stringify(request.body);
+    if (Buffer.byteLength(raw, "utf8") > MAX_BODY_SIZE) throw new HttpError(413);
+    try { return JSON.parse(raw); } catch { throw new HttpError(400); }
+  }
+  return new Promise((resolve, reject) => {
+    let size = 0;
+    const chunks = [];
+    const finish = (error, body) => {
+      clearTimeout(timer);
+      request.off("data", onData);
+      request.off("end", onEnd);
+      request.off("error", onError);
+      request.off("aborted", onAborted);
+      if (error) {
+        // An interrupted upload can emit error after aborted; keep it handled.
+        request.once("error", () => {});
+        request.resume();
+        reject(error);
+      } else resolve(body);
+    };
+    const onData = (chunk) => {
+      size += Buffer.byteLength(chunk);
+      if (size > MAX_BODY_SIZE) return finish(new HttpError(413));
+      chunks.push(Buffer.from(chunk));
+    };
+    const onEnd = () => {
+      let body;
+      try { body = JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}"); }
+      catch { return finish(new HttpError(400)); }
+      finish(null, body);
+    };
+    const onError = () => finish(new HttpError(400));
+    const onAborted = () => finish(new HttpError(400));
+    const timer = setTimeout(() => finish(new HttpError(408)), 10_000);
+    request.on("data", onData);
+    request.on("end", onEnd);
+    request.on("error", onError);
+    request.on("aborted", onAborted);
   });
 }
 
@@ -115,7 +146,8 @@ function sanitizeMessages(value) {
     return { role: message.role, content };
   });
 
-  if (messages.some((message) => message === null)) {
+  if (messages.some((message) => message === null) ||
+      messages.reduce((total, message) => total + message.content.length, 0) > MAX_TOTAL_MESSAGE_LENGTH) {
     return null;
   }
 
@@ -137,139 +169,229 @@ function extractResponseText(data) {
     .trim();
 }
 
-function isRetryableNetworkError(error) {
-  const code = error?.code ?? error?.cause?.code;
-  return (
-    code === "ECONNRESET" ||
-    code === "ETIMEDOUT" ||
-    (error?.name === "TypeError" && /fetch failed/i.test(error.message || ""))
-  );
+const RETRYABLE_STATUS = new Set([408, 429, 500, 502, 503, 504]);
+const RETRYABLE_NETWORK_CODES = new Set([
+  "ECONNRESET", "ECONNREFUSED", "ETIMEDOUT", "EAI_AGAIN", "ENETUNREACH", "EHOSTUNREACH",
+  "UND_ERR_CONNECT_TIMEOUT", "UND_ERR_HEADERS_TIMEOUT", "UND_ERR_SOCKET",
+]);
+
+function isTemporaryNetworkError(error) {
+  if (error?.name === "AbortError" || error?.name === "TimeoutError") return false;
+  return RETRYABLE_NETWORK_CODES.has(error?.cause?.code || error?.code);
 }
 
-async function requestOpenAI(messages, fetchImplementation = fetch, onRetry = () => {}) {
-  const apiKey = process.env.OPENAI_API_KEY;
-  if (!apiKey || apiKey === "your_openai_api_key_here") {
-    throw new Error("OPENAI_API_KEY is not configured");
+function isRetryableHttpError(status, data) {
+  if (!RETRYABLE_STATUS.has(status)) return false;
+  const code = data?.error?.code;
+  const type = data?.error?.type;
+  // Classify only structured codes, never provider messages or headers in logs.
+  if ([code, type].some((value) => typeof value === "string" &&
+      /quota|billing|credit|spend|usage_limit|invalid|authentication|permission|model_not_found|context_length/.test(value))) {
+    return false;
   }
+  // Unknown 429s fail closed: do not accidentally retry a new billing error.
+  return status !== 429 || code === "rate_limit_exceeded" || code === "slow_down" ||
+    type === "rate_limit_error" || type === "rate_limit_exceeded";
+}
 
+function retryAfterMs(value, wallNow) {
+  if (typeof value !== "string" || !value.trim()) return 0;
+  const trimmed = value.trim();
+  if (/^\d+(?:\.\d+)?$/.test(trimmed)) return Number(trimmed) * 1000;
+  // HTTP-date form; reject other values, including negative delta-seconds.
+  if (!/^[A-Za-z]{3}, /.test(trimmed)) return 0;
+  const date = Date.parse(trimmed);
+  return Number.isFinite(date) ? Math.max(0, date - wallNow()) : 0;
+}
+
+async function requestOpenAI(messages, fetchImplementation = fetch, signal, {
+  onRetry = () => {},
+  sleep = (ms, abortSignal) => wait(ms, undefined, { signal: abortSignal }),
+  random = Math.random,
+  now = () => performance.now(),
+  wallNow = Date.now,
+} = {}) {
+  const apiKey = process.env.OPENAI_API_KEY;
+  if (!apiKey || apiKey === "your_openai_api_key_here") throw new Error("API is not configured");
   const configuredTimeout = Number(process.env.OPENAI_TIMEOUT_MS);
-  const timeoutMs =
-    Number.isFinite(configuredTimeout) && configuredTimeout > 0
-      ? configuredTimeout
-      : DEFAULT_TIMEOUT_MS;
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), timeoutMs);
-
-  try {
-    for (let attempt = 1; attempt <= MAX_API_ATTEMPTS; attempt += 1) {
-      if (controller.signal.aborted) throw controller.signal.reason;
-
-      let apiResponse;
-      let data;
-      try {
-        apiResponse = await fetchImplementation("https://api.openai.com/v1/responses", {
-          method: "POST",
-          headers: {
-            Authorization: `Bearer ${apiKey}`,
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({
-            model: process.env.OPENAI_MODEL || "gpt-5.4-mini",
-            instructions: SYSTEM_PROMPT,
-            input: messages,
-            store: false,
-          }),
-          signal: controller.signal,
-        });
-
-        if (apiResponse.ok) {
-          data = await apiResponse.json().catch((error) => {
-            if (isRetryableNetworkError(error)) throw error;
-            return null;
-          });
-        }
-      } catch (error) {
-        const safe = (value) =>
-          typeof value === "string" ? value.replaceAll(apiKey, "[REDACTED]") : value;
-        const cause = error?.cause;
-        const causeDetails = cause == null
-          ? null
-          : typeof cause === "object"
-            ? {
-                name: safe(cause.name),
-                message: safe(cause.message),
-                code: safe(cause.code),
-                errno: safe(cause.errno),
-                syscall: safe(cause.syscall),
-                hostname: safe(cause.hostname),
-              }
-            : safe(cause);
-
-        console.error("[openai network]", JSON.stringify({
-          attempt,
-          "error.name": safe(error?.name),
-          "error.message": safe(error?.message),
-          "error.cause": causeDetails,
-          code: safe(error?.code ?? cause?.code),
-          errno: safe(error?.errno ?? cause?.errno),
-          syscall: safe(error?.syscall ?? cause?.syscall),
-          hostname: safe(error?.hostname ?? cause?.hostname),
-        }));
-
-        if (attempt < MAX_API_ATTEMPTS && isRetryableNetworkError(error) && !controller.signal.aborted) {
-          onRetry();
-          await delay(RETRY_DELAYS_MS[attempt - 1], undefined, { signal: controller.signal });
-          continue;
-        }
-        throw error;
+  const timeoutMs = Number.isFinite(configuredTimeout) && configuredTimeout > 0
+    ? Math.floor(Math.min(configuredTimeout, DEFAULT_TIMEOUT_MS)) : DEFAULT_TIMEOUT_MS;
+  const configuredAttemptTimeout = Number(process.env.OPENAI_ATTEMPT_TIMEOUT_MS);
+  const attemptTimeoutMs = Number.isFinite(configuredAttemptTimeout) && configuredAttemptTimeout > 0
+    ? Math.floor(Math.min(configuredAttemptTimeout, DEFAULT_ATTEMPT_TIMEOUT_MS)) : DEFAULT_ATTEMPT_TIMEOUT_MS;
+  // One deadline and one timeout signal for all attempts, body reads and sleeps.
+  const deadline = now() + timeoutMs;
+  const timeoutSignal = AbortSignal.timeout(timeoutMs);
+  const apiSignal = signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal;
+  const checkBudget = () => {
+    apiSignal.throwIfAborted();
+    if (now() >= deadline) throw new DOMException("API timeout", "TimeoutError");
+  };
+  const requestBody = JSON.stringify({
+    model: process.env.OPENAI_MODEL || "gpt-5.4-mini",
+    instructions: SYSTEM_PROMPT, input: messages, store: false,
+    max_output_tokens: MAX_OUTPUT_TOKENS,
+  });
+  for (let attempt = 1; attempt <= MAX_API_ATTEMPTS; attempt++) {
+    checkBudget();
+    let apiResponse;
+    let retryAfter = 0;
+    let retryable = false;
+    const attemptController = new AbortController();
+    const attemptSignal = AbortSignal.any([apiSignal, attemptController.signal]);
+    // Bound header/error-body waiting. Once HTTP succeeds, body reading may
+    // use the remaining overall budget and must never be retried.
+    const attemptTimer = setTimeout(() => {
+      attemptController.abort(new DOMException("Attempt timeout", "TimeoutError"));
+    }, Math.max(1, Math.min(attemptTimeoutMs, Math.ceil(deadline - now()))));
+    try {
+      apiResponse = await fetchImplementation("https://api.openai.com/v1/responses", {
+        method: "POST",
+        headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
+        body: requestBody, signal: attemptSignal,
+      });
+    } catch (error) {
+      checkBudget();
+      if (!attemptController.signal.aborted && !isTemporaryNetworkError(error)) {
+        throw new Error("Provider request failed");
       }
-
-      if (!apiResponse.ok) {
-        data = await apiResponse.json().catch(() => null);
-        const apiMessage = data?.error?.message || `OpenAI API error ${apiResponse.status}`;
-        throw new Error(apiMessage);
+      retryable = true;
+    } finally {
+      if (!apiResponse || apiResponse.ok || apiSignal.aborted || now() >= deadline) {
+        clearTimeout(attemptTimer);
       }
-
+    }
+    checkBudget();
+    if (apiResponse?.ok) {
+      // Never retry after a successful response starts arriving, even if its
+      // body is truncated or a network error interrupts JSON parsing.
+      const data = await apiResponse.json();
+      checkBudget();
       const text = extractResponseText(data);
-      if (!text) {
-        throw new Error("OpenAI API returned an empty response");
+      if (!text || data.status === "incomplete" || data.status === "failed") {
+        throw new Error("Provider returned no complete answer");
       }
-
-      console.info("[openai] success", JSON.stringify({ attempt }));
       return text;
     }
-  } finally {
-    clearTimeout(timeout);
+    if (apiResponse) {
+      let data;
+      try {
+        data = await apiResponse.json().catch(() => null);
+      } finally {
+        clearTimeout(attemptTimer);
+      }
+      checkBudget();
+      retryable = isRetryableHttpError(apiResponse.status, data);
+      if (apiResponse.status === 429 || apiResponse.status === 503) {
+        retryAfter = retryAfterMs(apiResponse.headers.get("retry-after"), wallNow);
+      }
+    }
+    if (!retryable || attempt === MAX_API_ATTEMPTS) throw new Error("Provider request failed");
+    const backoff = 1000 * 2 ** (attempt - 1) + Math.floor(random() * 100);
+    const delayMs = Math.max(backoff, retryAfter);
+    // Do not shorten Retry-After to squeeze another request into the budget.
+    if (!Number.isFinite(delayMs) || delayMs >= deadline - now()) {
+      throw new Error("Provider retry exceeds time budget");
+    }
+    checkBudget();
+    onRetry();
+    checkBudget();
+    await sleep(delayMs, apiSignal);
   }
 }
 
-async function handleChat(request, response) {
-  try {
-    const body = await readJsonBody(request);
-    const messages = sanitizeMessages(body.messages);
-
-    if (!messages) {
-      sendJson(response, 400, { error: "Некорректное сообщение." });
-      return;
+function createChatHandler({ fetchImplementation = (...args) => fetch(...args), now = Date.now } = {}) {
+  // Best effort per process, NOT a distributed spending cap. Use Vercel WAF too.
+  const clients = new Map();
+  let active = 0;
+  let windowStart = 0;
+  let requests = 0;
+  return async function handleChat(request, response) {
+    if (request.method !== "POST") {
+      response.setHeader("Allow", "POST");
+      return sendJson(response, 405, { error: "Method not allowed" });
     }
-
-    startEventStream(response);
-    const reply = await requestOpenAI(messages, fetch, () => {
-      sendEvent(response, { type: "status", status: "retrying" });
-    });
-    sendEvent(response, { type: "reply", reply });
-    response.end();
-  } catch (error) {
-    const reason = error?.name === "AbortError" ? "API timeout" : error?.message;
-    console.error(`[chat] ${reason || "Unknown API error"}`);
-    if (response.headersSent) {
-      sendEvent(response, { type: "error", error: API_ERROR_MESSAGE });
-      response.end();
-    } else {
-      sendJson(response, 503, { error: API_ERROR_MESSAGE });
+    if (process.env.CHAT_ENABLED === "false") {
+      return sendJson(response, 503, { error: API_ERROR_MESSAGE });
     }
-  }
+    // Browser cross-site protection; not authentication or a bot defence.
+    if (request.headers.origin) {
+      try {
+        if (new URL(request.headers.origin).host !== request.headers.host) throw new Error();
+      } catch {
+        return sendJson(response, 403, { error: "Forbidden" });
+      }
+    }
+    if (request.headers["content-type"]?.split(";")[0].trim().toLowerCase() !== "application/json") {
+      return sendJson(response, 415, { error: "Expected application/json" });
+    }
+    const time = now();
+    for (const [key, value] of clients) {
+      if (time - value.start >= 60_000) clients.delete(key);
+    }
+    // Vercel overwrites x-vercel-forwarded-for. Locally ignore proxy headers.
+    const ip = process.env.VERCEL === "1"
+      ? String(request.headers["x-vercel-forwarded-for"] || "unknown").split(",")[0].trim()
+      : request.socket?.remoteAddress || "local";
+    const client = clients.get(ip) || { start: time, count: 0 };
+    if (time - windowStart >= 60_000) { windowStart = time; requests = 0; }
+    if (client.count >= 6 || requests >= 30 || active >= 2 || (!clients.has(ip) && clients.size >= 1_000)) {
+      response.setHeader("Retry-After", "60");
+      return sendJson(response, 429, { error: "Слишком много запросов. Попробуйте через минуту." });
+    }
+    client.count += 1;
+    clients.set(ip, client);
+    requests += 1;
+    active += 1;
+    const controller = new AbortController();
+    const onCancel = () => controller.abort();
+    const onClose = () => { if (!response.writableEnded) controller.abort(); };
+    // Vercel's Node req/res API reports cancellation via request error;
+    // also accept request.signal when supplied by the runtime.
+    request.on("error", onCancel);
+    request.signal?.addEventListener("abort", onCancel, { once: true });
+    if (request.signal?.aborted) onCancel();
+    response.on("close", onClose);
+    try {
+      const body = await readJsonBody(request);
+      const messages = sanitizeMessages(body?.messages);
+      if (!messages) throw new HttpError(400);
+      controller.signal.throwIfAborted();
+      startEventStream(response);
+      const reply = await requestOpenAI(messages, fetchImplementation, controller.signal, {
+        onRetry: () => {
+          if (!response.destroyed) sendEvent(response, { type: "status", status: "retrying" });
+        },
+      });
+      if (!response.destroyed) {
+        sendEvent(response, { type: "reply", reply });
+        response.end();
+      }
+    } catch (error) {
+      if (controller.signal.aborted) {
+        if (!response.destroyed) response.end();
+        return;
+      }
+      // Never log arbitrary errors, causes, headers, prompts or provider bodies.
+      console.error("[chat] request_failed");
+      if (response.destroyed) return;
+      if (response.headersSent) {
+        sendEvent(response, { type: "error", error: API_ERROR_MESSAGE });
+        response.end();
+      } else {
+        const status = error instanceof HttpError ? error.status : 503;
+        sendJson(response, status, { error: status === 400 ? "Некорректное сообщение." : API_ERROR_MESSAGE });
+      }
+    } finally {
+      active -= 1;
+      request.off("error", onCancel);
+      request.signal?.removeEventListener("abort", onCancel);
+      response.off("close", onClose);
+    }
+  };
 }
+
+const handleChat = createChatHandler();
 
 async function serveStatic(pathname, response) {
   const staticFile = STATIC_FILES.get(pathname);
@@ -291,17 +413,17 @@ async function serveStatic(pathname, response) {
     });
     response.end(content);
   } catch (error) {
-    console.error(`[static] ${error.message}`);
+    console.error("[static] read_failed");
     sendJson(response, 500, { error: "Internal server error" });
   }
 }
 
-function createServer() {
+function createServer(chatHandler = handleChat) {
   return http.createServer(async (request, response) => {
-    const url = new URL(request.url, `http://${request.headers.host || HOST}`);
+    const url = new URL(request.url, `http://${HOST}`);
 
-    if (request.method === "POST" && url.pathname === "/api/chat") {
-      await handleChat(request, response);
+    if (url.pathname === "/api/chat") {
+      await chatHandler(request, response);
       return;
     }
 
@@ -337,6 +459,8 @@ module.exports = {
   API_ERROR_MESSAGE,
   SYSTEM_PROMPT,
   createServer,
+  createChatHandler,
+  handleChat,
   extractResponseText,
   requestOpenAI,
   sanitizeMessages,

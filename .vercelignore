@@ -1,0 +1,14 @@
+# Upload only runtime sources/configuration. Applies to Vercel CLI uploads.
+/*
+!/server.js
+!/package.json
+!/vercel.json
+!/api/
+/api/*
+!/api/chat.js
+!/public/
+/public/*
+!/public/index.html
+!/public/app.js
+!/public/styles.css
+!/public/favicon.svg
