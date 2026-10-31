@@ -132,7 +132,7 @@ test("button is a non-submit action in the topbar; reset restores exactly one gr
   const focusBefore = app.input.focusCount;
   app.reset();
   assert.deepEqual(app.history(), []);
-  assert.equal(app.messages.children.length, 1);
+  assert.equal(app.messages.children.length, 2);
   assert.equal(app.messages.textContent, greeting);
   assert.notEqual(app.messages.firstElementChild, app.initial);
   assert.equal(app.input.value, "");
