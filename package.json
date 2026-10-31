@@ -6,7 +6,8 @@
   "scripts": {
     "start": "node --env-file-if-exists=.env server.js",
     "dev": "node --watch --env-file-if-exists=.env server.js",
-    "check": "node --check server.js && node --check api/chat.js && node --check public/app.js",
+    "check": "node scripts/check-syntax.js",
+    "check:deploy": "node scripts/check-deploy.js",
     "test": "node --test"
   },
   "engines": {

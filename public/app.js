@@ -2,12 +2,30 @@ const form = document.querySelector("#chat-form");
 const input = document.querySelector("#message-input");
 const sendButton = document.querySelector("#send-button");
 const messagesElement = document.querySelector("#messages");
+const newConversationButton = document.querySelector("#new-conversation-button");
+const initialGreeting = messagesElement.firstElementChild.cloneNode(true);
 
 const ERROR_MESSAGE = "Сейчас не удалось получить ответ. Пожалуйста, попробуйте ещё раз.";
 const WAITING_MESSAGE = "Получаю ответ…";
 const RETRYING_MESSAGE = "Связь нестабильна, повторяю запрос…";
 const conversation = [];
 let isSending = false;
+let requestId = 0;
+let activeController = null;
+
+function startNewConversation() {
+  // Invalidate first: an aborted request must never affect the next dialogue.
+  requestId += 1;
+  activeController?.abort();
+  activeController = null;
+  conversation.length = 0;
+  messagesElement.replaceChildren(initialGreeting.cloneNode(true));
+  messagesElement.scrollTo({ top: 0, behavior: "instant" });
+  input.value = "";
+  resizeInput();
+  setSending(false);
+  input.focus();
+}
 
 function scrollToLatest() {
   messagesElement.scrollTo({
@@ -79,7 +97,7 @@ function createStatusMessage(text) {
   return { status, label };
 }
 
-async function readChatEvents(response, onEvent) {
+async function readChatEvents(response, onEvent, signal) {
   if (!response.body) {
     throw new Error("Streaming response is unavailable");
   }
@@ -87,22 +105,30 @@ async function readChatEvents(response, onEvent) {
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
   let buffer = "";
+  const cancelReader = () => { reader.cancel().catch(() => {}); };
+  signal.addEventListener("abort", cancelReader, { once: true });
+  try {
+    signal.throwIfAborted();
+    while (true) {
+      const { value, done } = await reader.read();
+      signal.throwIfAborted();
+      buffer += decoder.decode(value, { stream: !done });
 
-  while (true) {
-    const { value, done } = await reader.read();
-    buffer += decoder.decode(value, { stream: !done });
+      const lines = buffer.split("\n");
+      buffer = lines.pop() || "";
 
-    const lines = buffer.split("\n");
-    buffer = lines.pop() || "";
+      for (const line of lines) {
+        if (line.trim()) onEvent(JSON.parse(line));
+      }
 
-    for (const line of lines) {
-      if (line.trim()) onEvent(JSON.parse(line));
+      if (done) break;
     }
 
-    if (done) break;
+    if (buffer.trim()) onEvent(JSON.parse(buffer));
+  } finally {
+    signal.removeEventListener("abort", cancelReader);
+    reader.releaseLock();
   }
-
-  if (buffer.trim()) onEvent(JSON.parse(buffer));
 }
 
 function resizeInput() {
@@ -118,6 +144,10 @@ function setSending(value) {
 }
 
 async function sendMessage(text) {
+  const id = ++requestId;
+  const controller = new AbortController();
+  activeController = controller;
+  const isCurrent = () => id === requestId;
   conversation.push({ role: "user", content: text });
   createMessage("user", text);
   const { status: statusMessage, label: statusText } = createStatusMessage(WAITING_MESSAGE);
@@ -128,7 +158,12 @@ async function sendMessage(text) {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ messages: conversation.slice(-24) }),
+      signal: controller.signal,
     });
+    if (!isCurrent()) {
+      await response.body?.cancel().catch(() => {});
+      return;
+    }
     if (!response.ok) {
       const data = await response.json().catch(() => ({}));
       throw new Error(data.error || "Chat request failed");
@@ -137,6 +172,7 @@ async function sendMessage(text) {
     let reply = "";
     let requestError = "";
     await readChatEvents(response, (event) => {
+      if (!isCurrent()) return;
       if (event.type === "status" && event.status === "retrying") {
         statusText.textContent = RETRYING_MESSAGE;
         scrollToLatest();
@@ -145,7 +181,9 @@ async function sendMessage(text) {
       } else if (event.type === "error") {
         requestError = event.error || ERROR_MESSAGE;
       }
-    });
+    }, controller.signal);
+
+    if (!isCurrent()) return;
 
     if (requestError || !reply) {
       throw new Error(requestError || "Empty API response");
@@ -155,12 +193,16 @@ async function sendMessage(text) {
     conversation.push({ role: "assistant", content: reply });
     createMessage("assistant", reply);
   } catch (error) {
+    if (!isCurrent()) return;
     console.error("Chat request failed:", error);
     statusMessage.remove();
     createMessage("assistant", ERROR_MESSAGE, { error: true });
   } finally {
-    setSending(false);
-    input.focus();
+    if (isCurrent()) {
+      activeController = null;
+      setSending(false);
+      input.focus();
+    }
   }
 }
 
@@ -177,6 +219,7 @@ form.addEventListener("submit", async (event) => {
 });
 
 input.addEventListener("input", resizeInput);
+newConversationButton.addEventListener("click", startNewConversation);
 input.addEventListener("keydown", (event) => {
   if (event.key === "Enter" && !event.shiftKey) {
     event.preventDefault();

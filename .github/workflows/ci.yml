@@ -1,0 +1,45 @@
+name: CI
+
+on:
+  push:
+    branches: [feature/new-conversation, main]
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+
+jobs:
+  checks:
+    name: Node 24 checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js 24
+        uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          package-manager-cache: false
+
+      # There are no external dependencies or lockfile. No install is needed.
+      # Fail rather than silently omit installation if dependencies are added.
+      - name: Verify dependency-free and env-free checkout
+        run: |
+          node -e "const fs = require('node:fs'); const p = require('./package.json'); for (const group of ['dependencies', 'devDependencies', 'optionalDependencies']) { if (Object.keys(p[group] || {}).length) throw new Error('Dependencies added: configure npm ci and commit a lockfile'); } if (fs.existsSync('.env')) throw new Error('CI must not load .env');"
+
+      - name: Check JavaScript syntax
+        run: npm run check
+
+      # Runs every test, including the startup smoke test. The clean checkout
+      # has no .env; provider calls in server/frontend tests are explicit mocks.
+      - name: Run all tests without OpenAI
+        run: npm test
+
+      - name: Verify deployable static assets and API entrypoint
+        run: npm run check:deploy
