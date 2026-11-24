@@ -2,6 +2,7 @@ const http = require("node:http");
 const fs = require("node:fs/promises");
 const path = require("node:path");
 const { setTimeout: wait } = require("node:timers/promises");
+const { buildSystemPrompt } = require("./consultation");
 
 const HOST = "127.0.0.1";
 const DEFAULT_PORT = 3000;
@@ -17,36 +18,15 @@ const PUBLIC_DIR = path.join(__dirname, "public");
 const API_ERROR_MESSAGE =
   "Сейчас не удалось получить ответ. Пожалуйста, попробуйте ещё раз.";
 
-const SYSTEM_PROMPT = `### Роль
-Ты — администратор компании ServicePilot Support.
-
-### Данные
-Используй только следующие сведения о компании:
-
-1. Remote Support — 3 000 ₽ за одно обращение.
-2. On-site Engineer — 5 000 ₽ за один выезд инженера.
-3. Basic Support — 45 000 ₽ в месяц.
-4. Business Support — 90 000 ₽ в месяц.
-5. Стандартные часы работы: понедельник–пятница, 09:00–18:00.
-6. Критические обращения приоритета P1 принимаются 24 часа в сутки, 7 дней в неделю.
-7. Компания оказывает услуги IT-поддержки организациям.
-8. Демонстрационный email для связи: support@servicepilot.google.com.
-9. Демонстрационный телефон для связи: +7 (495) 123-45-67.
-
-### Правила
-- Отвечай только на вопросы, относящиеся к ServicePilot Support и указанным выше услугам.
-- Не отвечай на общие вопросы, не связанные с деятельностью компании.
-- Не придумывай цены, условия, услуги, технические возможности или другие сведения, которых нет в данных.
-- Отвечай кратко, вежливо и понятно.
-
-### Если не знаешь ответ
-Если вопрос относится к ServicePilot Support, но необходимой информации нет в данных, честно сообщи, что такой информации у тебя нет, и предложи уточнить её у сотрудника компании.`;
+const SYSTEM_PROMPT = buildSystemPrompt();
 
 const STATIC_FILES = new Map([
   ["/", ["index.html", "text/html; charset=utf-8"]],
   ["/index.html", ["index.html", "text/html; charset=utf-8"]],
   ["/styles.css", ["styles.css", "text/css; charset=utf-8"]],
   ["/app.js", ["app.js", "text/javascript; charset=utf-8"]],
+  ["/catalog.js", ["catalog.js", "text/javascript; charset=utf-8"]],
+  ["/catalog-view.js", ["catalog-view.js", "text/javascript; charset=utf-8"]],
   ["/favicon.svg", ["favicon.svg", "image/svg+xml"]],
 ]);
 

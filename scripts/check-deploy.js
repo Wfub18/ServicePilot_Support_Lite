@@ -19,7 +19,7 @@ for (const group of ["dependencies", "devDependencies", "optionalDependencies"])
 assert.ok(config.functions["api/chat.js"], "Vercel API function must be configured");
 
 const publicRoot = path.join(root, "public");
-const assets = ["app.js", "favicon.svg", "index.html", "styles.css"];
+const assets = ["app.js", "catalog-view.js", "catalog.js", "favicon.svg", "index.html", "styles.css"];
 assert.deepEqual(fs.readdirSync(publicRoot).sort(), assets,
   "Review the public asset allowlist before publishing additional files");
 for (const asset of assets) {
@@ -41,6 +41,8 @@ for (const match of html.matchAll(/\b(?:src|href)\s*=\s*["']([^"']+)["']/gi)) {
   checkReference(match[1]);
 }
 assert.match(html, /<script\b[^>]*\bsrc=["']\/app\.js["']/i);
+assert.match(html, /<script\b[^>]*\bsrc=["']\/catalog\.js["']/i);
+assert.match(html, /<script\b[^>]*\bsrc=["']\/catalog-view\.js["']/i);
 assert.match(html, /<link\b[^>]*\bhref=["']\/styles\.css["']/i);
 assert.match(html, /<link\b[^>]*\bhref=["']\/favicon\.svg["']/i);
 const css = fs.readFileSync(path.join(publicRoot, "styles.css"), "utf8");

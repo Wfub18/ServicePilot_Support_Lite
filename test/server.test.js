@@ -12,11 +12,11 @@ process.env.OPENAI_API_KEY = "test-only-placeholder-not-a-real-key";
 delete process.env.VERCEL;
 delete process.env.CHAT_ENABLED;
 after(() => { global.fetch = realFetch; });
-const messages = [{ role: "user", content: "Сколько стоит Remote Support?" }];
+const messages = [{ role: "user", content: "Сколько стоит ESSENTIAL?" }];
 const payload = JSON.stringify({ messages });
 const answer = () => new Response(JSON.stringify({
   status: "completed",
-  output: [{ type: "message", content: [{ type: "output_text", text: "3 000 ₽ за обращение." }] }],
+  output: [{ type: "message", content: [{ type: "output_text", text: "45 000 ₽/мес. с НДС." }] }],
 }), { headers: { "Content-Type": "application/json" } });
 
 async function withServer(t, handler, run) {
@@ -42,7 +42,7 @@ async function withServer(t, handler, run) {
 
 test("local assets and private paths", async (t) => {
   await withServer(t, createChatHandler(), async (request) => {
-    for (const path of ["/", "/app.js", "/styles.css", "/favicon.svg"]) {
+    for (const path of ["/", "/app.js", "/styles.css", "/favicon.svg", "/catalog.js", "/catalog-view.js"]) {
       assert.equal((await request({ path, method: "GET", body: "" })).status, 200);
     }
     for (const path of ["/.env", "/server.js", "/ServicePilot_Support_Lite_SUBMIT.zip"]) {
@@ -317,6 +317,6 @@ test("deployment configuration exposes only frontend assets", () => {
   assert.equal(config.outputDirectory, "public");
   assert.equal(config.functions["api/chat.js"].maxDuration, 120);
   assert.equal(config.functions["api/chat.js"].supportsCancellation, true);
-  assert.deepEqual(fs.readdirSync("public").sort(), ["app.js", "favicon.svg", "index.html", "styles.css"]);
+  assert.deepEqual(fs.readdirSync("public").sort(), ["app.js", "catalog-view.js", "catalog.js", "favicon.svg", "index.html", "styles.css"]);
   assert.equal(JSON.parse(fs.readFileSync("package.json")).engines.node, "24.x");
 });
