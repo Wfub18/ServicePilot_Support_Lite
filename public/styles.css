@@ -554,3 +554,15 @@ textarea::placeholder {
     transition-duration: 0.01ms !important;
   }
 }
+.catalog { margin-top: 24px; padding: 24px; border: 1px solid var(--line); border-radius: 20px; background: var(--surface); }
+.catalog h2 { margin-top: 0; font-size: 1.25rem; }
+#catalog-notice { color: var(--muted); line-height: 1.6; }
+.catalog-packages { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; }
+.catalog-card { padding: 18px; border: 1px solid var(--line); border-radius: 14px; background: var(--surface-soft); overflow-wrap: anywhere; }
+.catalog-card h3 { margin-top: 0; color: var(--blue-dark); font-size: 1rem; }
+.catalog-card p, .catalog-terms p { font-size: 1rem; line-height: 1.6; }
+.catalog-price { font-weight: 700; }
+.catalog summary { cursor: pointer; padding: 10px 0; font-weight: 600; line-height: 1.5; }
+.catalog summary:focus-visible { outline: 3px solid var(--blue); outline-offset: 3px; }
+.catalog-terms { margin-top: 18px; }
+@media (max-width: 760px) { .catalog-packages { grid-template-columns: 1fr; } .catalog { padding: 18px; } }

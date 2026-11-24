@@ -32,10 +32,6 @@
         </div>
         <div class="topbar-actions">
           <button id="new-conversation-button" class="new-conversation-button" type="button">Новый диалог</button>
-          <div class="availability" aria-label="Критические обращения P1 принимаются круглосуточно">
-            <span>Поддержка P1</span>
-            <strong>24/7</strong>
-          </div>
         </div>
       </header>
 
@@ -50,25 +46,11 @@
             <div class="avatar" aria-hidden="true">SP</div>
             <div class="message-content">
               <span class="message-author">AI-администратор</span>
-              <div class="bubble">Здравствуйте! Я AI-администратор ServicePilot Support. Расскажу об услугах, стоимости и времени работы компании. Чем могу помочь?</div>
+              <div class="bubble">Здравствуйте! Я учебный AI-консультант ServicePilot Support. Помогу уточнить требования и подобрать поддержку по учебному каталогу. Сколько пользователей и компьютеров у вас, какой график поддержки нужен?</div>
             </div>
           </article>
         </section>
 
-        <section class="quick-facts" aria-label="Краткая информация">
-          <div class="fact">
-            <span class="fact-label">Удалённая поддержка</span>
-            <strong>3 000 ₽</strong>
-          </div>
-          <div class="fact">
-            <span class="fact-label">Выезд инженера</span>
-            <strong>5 000 ₽</strong>
-          </div>
-          <div class="fact">
-            <span class="fact-label">Стандартные часы работы</span>
-            <strong>Пн–Пт, 09:00–18:00</strong>
-          </div>
-        </section>
 
         <form id="chat-form" class="composer">
           <label class="sr-only" for="message-input">Введите сообщение</label>
@@ -90,8 +72,19 @@
         </form>
         <p class="composer-hint">Enter — отправить · Shift + Enter — новая строка</p>
       </main>
+      <section class="catalog" aria-labelledby="catalog-heading">
+        <h2 id="catalog-heading">Учебный каталог поддержки</h2>
+        <p id="catalog-notice">Учебный каталог. Все условия и цены вымышлены.</p>
+        <div id="catalog-packages" class="catalog-packages"></div>
+        <details class="catalog-terms">
+          <summary>Общие условия и границы SLA</summary>
+          <div id="catalog-common"></div>
+        </details>
+      </section>
     </div>
 
+    <script src="/catalog.js" defer></script>
+    <script src="/catalog-view.js" defer></script>
     <script src="/app.js" defer></script>
   </body>
 </html>
